@@ -1,0 +1,115 @@
+---
+title: "SwiftKey Exploratory Data Analysis: English Language Data"
+author: "Akhil Kota"
+date: "2022-08-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Loading the Data
+We first load some package that will be used throughout the project. The tidytext package is used for processing text, including tokenization and visualization.
+```{r load_libs}
+suppressPackageStartupMessages(require(tidytext))
+suppressPackageStartupMessages(require(tidyverse))
+```
+
+We first load the data. Note that we have decided to use the entire available data set for analysis.
+```{r load_data}
+news <- readLines("../final/en_US/en_US.news.txt")
+twitter <- suppressWarnings(readLines("../final/en_US/en_US.twitter.txt"))
+blogs <- readLines("../final/en_US/en_US.blogs.txt")
+```
+
+Looking at the line count in each file, we see that a lot more tweets are available to us, but they are likely shorter than news/blog data on an item-by-item basis.
+```{r line_length}
+data.frame(file=c("news","twitter","blogs"), number_of_lines=c(length(news),length(twitter),length(blogs)))
+```
+
+## Pre-Processing the Data
+Now, we will tokenize sentences, then words in each of the sets above. Note: This may take 10-15 minutes to run.
+```{r preproc}
+news_df <- data.frame(type_id="news", item = news) %>% mutate(item_id = row_number())
+twitter_df <- data.frame(type_id="twitter", item = twitter) %>% mutate(item_id = row_number())
+blogs_df <- data.frame(type_id="blogs", item = blogs) %>% mutate(item_id = row_number())
+df <- rbind(news_df, twitter_df, blogs_df)
+rm(list=c("blogs","blogs_df","news","news_df","twitter","twitter_df"))
+
+sentences <- unnest_sentences(df, sentence, item) %>% mutate(type_id = factor(type_id), sentence_id = row_number())
+rm("df")
+
+words <- unnest_tokens(sentences, word, sentence) %>% mutate(word_id = as.numeric(factor(word)))
+```
+
+Now, we have a tokenized list of sentences and words. Let's quickly take a peek at the summary statistics for the sentence and word data.
+
+```{r summary}
+summary(sentences)
+summary(words)
+```
+
+Everything looks pretty reasonable in these data sets. Note that periods are omitted in the n-gram lists. We also see that, although there are more lines and sentences in the Twitter data set, the number of tokenized words we found is actually lower in the Twitter data set (by the type_id counts)! This is to be expected, with Twitter's famous character limit.  
+  
+Lastly, before visualizing the data, we need to narrow our data down to only the training data. We take this measure to avoid making decisions about the model based on CV and test data, which would amount to fitting the model to those data and defeating their purpose as a result. We will use a simple split of 80% of sentences for training, 10% for cross-validation, and 10% for testing. The cross-validation data set will be a static set (not k-fold). We do this by choosing the corresponding proportion of sentences for each set, and the words associated with those sentences using a join on sentence_id.
+```{r train_cv_test_split}
+sentence_ids <- sentences$sentence_id
+training_set_size <- 0.8
+seed <- 64
+
+set.seed(seed)
+train_ids <- sample(sentence_ids, size = ceiling(training_set_size*length(sentence_ids)))
+
+train_sentences <- filter(sentences, sentence_id %in% train_ids)
+train_words <- filter(words, sentence_id %in% train_ids)
+
+rm(list=c("sentence_ids", "train_ids"))
+```
+
+The CV and test sets are irrelevant to us here, so they are omitted.
+
+## Visualizing Single Word Data
+We will first look at the top overall word frequencies.
+```{r word_freq_barplot}
+train_words %>%
+    group_by(word) %>%
+    summarize(count = n()) %>%
+    mutate(freq = count/sum(count)) %>%
+    slice_max(freq, n = 20) %>%
+    arrange(desc(freq)) %>%
+    ggplot(aes(reorder(word, -freq), freq)) + 
+    geom_bar(stat="identity", fill="steelblue") + 
+    labs(x="Word", y="Frequency of Word", title = "Top 20 Words in All Data")
+
+```
+
+Unsurprisingly, words like "the", "to", and "and" top our list. "the" seems particularly dominant. There is a noticeable interesting drop-off between "in" and "for", but can't really interpret this in any useful way right now.  
+  
+Let's now look at word frequencies by type of data (news, blogs, or Twitter). We make a pretty word cloud to visualize the words.
+```{r word_freq_by_type}
+library(ggwordcloud)
+train_words %>%
+    group_by(word, type_id) %>%
+    summarize(count = n()) %>%
+    ungroup() %>%
+    group_by(type_id) %>%
+    mutate(freq = count/sum(count)) %>%
+    slice_max(freq, n = 100) %>%
+    arrange(desc(type_id), desc(freq)) %>%
+    ggplot(aes(label=word, size=freq, color = factor(sample.int(10, 300, replace = TRUE)))) + 
+    geom_text_wordcloud_area(eccentricity = 1) + 
+    facet_wrap(~type_id)
+```
+
+The top 100 words in each type of data are visualized. While the words in blogs and news don't seem to differ much by frequency, the tweets in our data seem to have a lot more "I" and "you", and a relatively lower frequency of "the". This makes sense considering the personal and generally informal nature of Twitter. In general, we see a lot more personal pronouns as top 100 words in our tweet data.  
+  
+## Visualizing 2-Gram Data
+To visualize bigrams in a similar fashion, we first need to generate these. The code below generates bigrams from the training sentences, again using the tidytext package. This will take a few minutes to run.
+```{r bi_tri}
+bigrams <- unnest_ngrams(train_sentences, bigram, sentence, n=2L) %>% mutate(bigram_id = as.numeric(factor(bigram)))
+```
+
+We can again look at the top bigrams by type of input data. The wordclouds for the top 30 in each type (blogs, news, and Twitter) are produced below.  
+  
+For bigrams, we can also produce graph-like charts that show the most common links between words. This is done with the igraph and ggraph packages. Below, we have produced such a graph for the 500 most common bigrams across all training data.
