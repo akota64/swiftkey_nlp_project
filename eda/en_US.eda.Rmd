@@ -6,76 +6,73 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = FALSE)
 ```
 
-## Loading the Data
-We first load some package that will be used throughout the project. The tidytext package is used for processing text, including tokenization and visualization.
+## Overview
+This milestone report investigates the English language data set provided by the SwiftKey team, which includes corpora from news, blogs, and Twitter. We first investigate the files themselves and their general contents. Then, word and 2-gram distributions in each of the data sets are visualized to better understand the data. Note that a training set size of 80% of the overall data is used for exploratory analysis, after initial data file summary stats.
 ```{r load_libs}
 suppressPackageStartupMessages(require(tidytext))
 suppressPackageStartupMessages(require(tidyverse))
 ```
 
-We first load the data. Note that we have decided to use the entire available data set for analysis.
 ```{r load_data}
 news <- readLines("../final/en_US/en_US.news.txt")
 twitter <- suppressWarnings(readLines("../final/en_US/en_US.twitter.txt"))
 blogs <- readLines("../final/en_US/en_US.blogs.txt")
 ```
 
-Looking at the line count in each file, we see that a lot more tweets are available to us, but they are likely shorter than news/blog data on an item-by-item basis.
-```{r line_length}
-data.frame(file=c("news","twitter","blogs"), number_of_lines=c(length(news),length(twitter),length(blogs)))
-```
-
-## Pre-Processing the Data
-Now, we will tokenize sentences, then words in each of the sets above. Note: This may take 10-15 minutes to run.
-```{r preproc}
-news_df <- data.frame(type_id="news", item = news) %>% mutate(item_id = row_number())
-twitter_df <- data.frame(type_id="twitter", item = twitter) %>% mutate(item_id = row_number())
-blogs_df <- data.frame(type_id="blogs", item = blogs) %>% mutate(item_id = row_number())
+## Processing the Data and File Summary Stats
+Prior to visualization, we will detail the procedure involved in processing the data. The standard way of processing text data for computer analysis and prediction is tokenization, which is the process of splitting the text into chunks (sentences, n-grams, or words) in a standardized way and making computer-readable tokens out of them. This is done so that the computer can read and analyze the data  in an accurate fashion. For our purposes, the tidy text package from the Comprehensive R Archive Network (CRAN) is used for this pre-processing and tokenization of the available data. The code below performs this procedure, and leaves ID's to track the file, line, sentence, and word. We first tokenize sentences, then words.
+```{r preproc, echo = TRUE}
+news_df <- data.frame(type_id="news", line = news) %>% mutate(line_id = row_number())
+twitter_df <- data.frame(type_id="twitter", line = twitter) %>% mutate(line_id = row_number())
+blogs_df <- data.frame(type_id="blogs", line = blogs) %>% mutate(line_id = row_number())
 df <- rbind(news_df, twitter_df, blogs_df)
 rm(list=c("blogs","blogs_df","news","news_df","twitter","twitter_df"))
 
-sentences <- unnest_sentences(df, sentence, item) %>% mutate(type_id = factor(type_id), sentence_id = row_number())
+sentences <- unnest_sentences(df, sentence, line) %>% mutate(type_id = factor(type_id), sentence_id = row_number())
 rm("df")
 
 words <- unnest_tokens(sentences, word, sentence) %>% mutate(word_id = as.numeric(factor(word)))
 ```
 
-Now, we have a tokenized list of sentences and words. Let's quickly take a peek at the summary statistics for the sentence and word data.
+Below is a quick peak at each data file by line count, sentence count, and word count.
 
-```{r summary}
-summary(sentences)
-summary(words)
+```{r line_length}
+summary <- words %>%
+    group_by(type_id) %>%
+    summarize(
+        line_count = max(line_id),
+        sentence_count = max(sentence_id) - min(sentence_id) + 1,
+        word_count = n()
+    ) %>%
+    rename(file_type = type_id)
+
+summary %>% 
+    add_row(file_type = "TOTAL", line_count = sum(summary$line_count), sentence_count = sum(summary$sentence_count), word_count = sum(summary$word_count))
 ```
 
-Everything looks pretty reasonable in these data sets. Note that periods are omitted in the n-gram lists. We also see that, although there are more lines and sentences in the Twitter data set, the number of tokenized words we found is actually lower in the Twitter data set (by the type_id counts)! This is to be expected, with Twitter's famous character limit.  
-  
-Lastly, before visualizing the data, we need to narrow our data down to only the training data. We take this measure to avoid making decisions about the model based on CV and test data, which would amount to fitting the model to those data and defeating their purpose as a result. We will use a simple split of 80% of sentences for training, 10% for cross-validation, and 10% for testing. The cross-validation data set will be a static set (not k-fold). We do this by choosing the corresponding proportion of sentences for each set, and the words associated with those sentences using a join on sentence_id.
-```{r train_cv_test_split}
-sentence_ids <- sentences$sentence_id
-training_set_size <- 0.8
-seed <- 64
-
-set.seed(seed)
-train_ids <- sample(sentence_ids, size = ceiling(training_set_size*length(sentence_ids)))
-
-train_sentences <- filter(sentences, sentence_id %in% train_ids)
-train_words <- filter(words, sentence_id %in% train_ids)
-
-rm(list=c("sentence_ids", "train_ids"))
-```
-
-The CV and test sets are irrelevant to us here, so they are omitted.
+Although blogs have the lowest line count, we see that they actually have the highest word count of the three. Twitter data has predictably low words per line on average, likely due to Twitter's famous character limit.
 
 ## Visualizing Single Word Data
-We will first look at the top overall word frequencies.
-```{r word_freq_barplot}
-train_words %>%
+Now we will focus in on our training data set and investigate the distribution and frequencies of words. We will first look at the top overall word frequencies across the data files.
+
+```{r top_words_bar}
+seed <- 64 ## Used throughout the project
+training_set_size <- 0.8 # May be further sampled in the future for model fitting, but the seed will allow for data consistency
+set.seed(seed)
+sentences <- sentences[sample(1:nrow(sentences), nrow(sentences)*0.8),]
+
+words <- unnest_tokens(sentences, word, sentence) %>% mutate(word_id = as.numeric(factor(word)))
+
+word_freq <- words %>%
+    filter(!(is.na(word))) %>%
     group_by(word) %>%
     summarize(count = n()) %>%
-    mutate(freq = count/sum(count)) %>%
+    mutate(freq = count/sum(count))
+
+word_freq %>% 
     slice_max(freq, n = 20) %>%
     arrange(desc(freq)) %>%
     ggplot(aes(reorder(word, -freq), freq)) + 
@@ -84,32 +81,184 @@ train_words %>%
 
 ```
 
-Unsurprisingly, words like "the", "to", and "and" top our list. "the" seems particularly dominant. There is a noticeable interesting drop-off between "in" and "for", but can't really interpret this in any useful way right now.  
-  
-Let's now look at word frequencies by type of data (news, blogs, or Twitter). We make a pretty word cloud to visualize the words.
+Unsurprisingly, words like "the", "to", and "and" top our list. "the" seems particularly dominant. There is a noticeable interesting drop-off between "in" and "for", but we can't really interpret this in any other useful way. Next, we will visualize the top words after omitting "stop words", which are words like "the" and "and" that do not really add much information to the text, but are used mainly for grammar. The table below shows the frequency of stop words by data file. We use the [stop_words set available in the tidy text package](http://snowball.tartarus.org/algorithms/english/stop.txt) to analyze this.
+```{r stop_word_frequency}
+words %>%
+    group_by(type_id) %>%
+    summarize(stop_word_proportion = sum(word %in% stop_words$word)/n()) %>%
+    rename(file_type = type_id)
+```
+
+Interestingly, the blogs data have the highest proportion of stop words, and the news data have the least. Either way, a majority of every file consists of stop words. Removing these, we get the top 20 words across data sets shown below.
+```{r top_words_wo_stop_bar}
+word_freq %>%
+    filter(!(word %in% stop_words$word)) %>%
+    slice_max(freq, n = 20) %>%
+    arrange(desc(freq)) %>%
+    ggplot(aes(reorder(word, -freq), freq)) + 
+    geom_bar(stat="identity", fill="steelblue") + 
+    labs(x="Word", y="Frequency of Word", title = "Top 20 Words in All Data Without Stop Words")
+```
+
+We see an interesting mix of words, and some that seem specific to a certain data file (such as "rt" used in Twitter). We also see a several numbers, which are retained as words by the previous pre-processing and tokenization processes, although special characters have been removed. 
+
+Since we have started seeing some file-specific data popping up, let's now look at word frequencies by type of data (news, blogs, or Twitter). Below are some word clouds of the top 20 words in each data set, with and without stop words.
 ```{r word_freq_by_type}
-library(ggwordcloud)
-train_words %>%
+suppressPackageStartupMessages(require(ggwordcloud))
+temp <- words %>%
     group_by(word, type_id) %>%
     summarize(count = n()) %>%
     ungroup() %>%
     group_by(type_id) %>%
-    mutate(freq = count/sum(count)) %>%
-    slice_max(freq, n = 100) %>%
+    mutate(freq = count/sum(count))
+temp %>%
+    slice_max(freq, n = 20) %>%
     arrange(desc(type_id), desc(freq)) %>%
-    ggplot(aes(label=word, size=freq, color = factor(sample.int(10, 300, replace = TRUE)))) + 
+    ggplot(aes(label=word, size=freq, color = factor(sample.int(10, 60, replace = TRUE)))) + 
     geom_text_wordcloud_area(eccentricity = 1) + 
-    facet_wrap(~type_id)
+    facet_wrap(~type_id) +
+    labs(title = "Top 20 Words by File Type")
+temp %>%
+    filter(!(word %in% stop_words$word)) %>%
+    slice_max(freq, n = 20) %>%
+    arrange(desc(type_id), desc(freq)) %>%
+    ggplot(aes(label=word, size=freq, color = factor(sample.int(10, 60, replace = TRUE)))) + 
+    geom_text_wordcloud_area(eccentricity = 1) + 
+    facet_wrap(~type_id) +
+    labs(title = "Top 20 Words by File Type Without Stop Words")
 ```
 
-The top 100 words in each type of data are visualized. While the words in blogs and news don't seem to differ much by frequency, the tweets in our data seem to have a lot more "I" and "you", and a relatively lower frequency of "the". This makes sense considering the personal and generally informal nature of Twitter. In general, we see a lot more personal pronouns as top 100 words in our tweet data.  
+With stop words, the top words present in each of the data sets are relatively similar, with the exception of more personal pronouns in the Twitter and blog data. Without stop words, the top words of each data set considerably diverge. Both blogs and tweets have more personal topics, such as love and other emotions. Blogs and tweets differ in the type of language used, most notable in the presence of "im" in the top Twitter words and "i'm" in the top blog words. The top news words seem to revolve around location, time, and statistics, which is par for the course. Note that the pre-processing also makes all words lowercase by default, hence the appearance of the words.  
   
-## Visualizing 2-Gram Data
-To visualize bigrams in a similar fashion, we first need to generate these. The code below generates bigrams from the training sentences, again using the tidytext package. This will take a few minutes to run.
+Lastly, we take a look at the distribution of frequencies (in particular, how the word frequencies descend in our data set). We can then tell how large of a vocabulary would cover different percentiles of the data set.
+```{r freq_distribution}
+word_freq %>%
+    arrange(desc(freq)) %>%
+    ggplot(aes(freq)) + 
+    geom_histogram(bins=100) +
+    geom_rug() + 
+    labs(x = "Word Frequency", title = "Histogram of Word Frequencies Over All Data")
+word_freq %>%
+    arrange(desc(freq)) %>%
+    mutate(id = row_number()) %>%
+    ggplot(aes(id, freq)) +
+    geom_line(color="blue") + 
+    labs(x = "Word Frequency Rank (1 = Most Frequent)", y = "Word Frequency", title = "Word Frequency by Rank")
+```
+
+As expected, the distribution is extremely skewed right, with most words being very rare and some words extremely common. The rug plot below the histogram illustrates this very well. This skewness is remedied below by instead visualizing the frequency of the words on a log-10 scale.
+
+```{r word_freq_by_rank_log_10}
+word_freq %>%
+    arrange(desc(freq)) %>%
+    mutate(id = row_number()) %>%
+    ggplot(aes(id, freq)) +
+    geom_line(color="orange") + 
+    scale_x_continuous(trans='log10') + 
+    scale_y_continuous(trans='log10') + 
+    labs(x = "Word Frequency Rank (1 = Most Frequent) (Log-10)", y = "Word Frequency (Log-10)", title = "Word Frequency by Rank (Log-10)")
+```
+
+Now we get a better picture of the distribution. Below is a plot of the cumulative distribution of frequencies in the log-10 scale, along with a table of coverage percentiles denoting the smallest possible vocabulary that covers each percent of words in the data set.
+```{r cum_freq}
+word_cum_freq <- word_freq %>%
+    arrange(desc(freq)) %>%
+    mutate(id = row_number(),
+           cum_freq = cumsum(freq))
+ggplot(word_cum_freq, aes(id, cum_freq)) +
+    geom_line(color="purple") + 
+    scale_x_continuous(trans='log10') + 
+    scale_y_continuous(trans='log10') + 
+    labs(x = "Word Frequency Rank (1 = Most Frequent) (Log-10)", y = "Cumulative Frequency (Log-10)", title = "Word Frequency by Rank (Log-10)")
+
+percent_coverage <- c(0, .10,.20,.30,.40,.50,.60,.70,.80,.90,.95,.99,.999)
+
+word_cum_freq %>%
+    mutate(percentile_group = cut(word_cum_freq$cum_freq, breaks = percent_coverage)) %>%
+    group_by(percentile_group) %>%
+    summarize(number_of_words = first(id)) %>%
+    mutate(percent_coverage = percent_coverage*100) %>%
+    filter(number_of_words!=1) %>%
+    select(-percentile_group) %>%
+    relocate(percent_coverage)
+
+rm(list=c("word_freq","word_cum_freq", "temp", "percent_coverage"))
+```
+
+We see that only a very small portion of the total words in the data set can be used to cover even 90% of the data! This is very good news for the training of our model, if we can expect the population data to be similar enough to the training data. For reference, the total number of unique words in our training data set is just under 700,000 words.
+
+## Visualizing Bigram Data
+Visualizing bigrams (groups of 2 words, also known as 2-grams) can give us some clues about how words are typically grouped together for our prediction algorithm. In this section, we will visualize bigram frequencies and relationships across and within the three data sets we have.  
 ```{r bi_tri}
-bigrams <- unnest_ngrams(train_sentences, bigram, sentence, n=2L) %>% mutate(bigram_id = as.numeric(factor(bigram)))
+bigrams <- unnest_ngrams(sentences, bigram, sentence, n=2L) %>% mutate(bigram_id = as.numeric(factor(bigram)))
 ```
 
-We can again look at the top bigrams by type of input data. The wordclouds for the top 30 in each type (blogs, news, and Twitter) are produced below.  
+The most common bigrams across all data are given below, along with the total number of unique bigrams.
+```{r top_bigrams_bar}
+bigram_freq <- bigrams %>%
+    filter(!(is.na(bigram))) %>%
+    group_by(bigram) %>%
+    summarize(count = n()) %>%
+    mutate(freq = count/sum(count))
+
+rm("bigrams")
+    
+bigram_freq %>% 
+    slice_max(freq, n = 10) %>%
+    arrange(desc(freq)) %>%
+    ggplot(aes(reorder(bigram, -freq), freq)) + 
+    geom_bar(stat="identity", fill="steelblue") + 
+    labs(x="Bigram", y="Frequency of Bigram", title = "Top 10 Bigrams in All Data")
+
+data.frame(count = nrow(bigram_freq), row.names = c("Total Unique Bigrams"))
+```
+
+For bigrams, we can also produce graph-like charts that show the most common links between words. This is done with the igraph and ggraph packages. Below, we have produced such a graph for the top 100 bigrams in throughout the data.
+```{r bigram_vis}
+suppressPackageStartupMessages(require(igraph))
+suppressPackageStartupMessages(require(ggraph))
+suppressPackageStartupMessages(require(grid))
+
+bigram_counts <- bigram_freq %>% 
+    separate(bigram, c("word1","word2"), sep = " ") %>% 
+    select(-freq)
+
+rm("bigram_freq")
+
+igraph <- bigram_counts %>%
+    filter(count > 10000) %>%
+    arrange(desc(count)) %>%
+    head(100) %>%
+    graph_from_data_frame()
+
+ggraph(igraph) +
+    geom_edge_link(aes(edge_alpha = count), arrow = arrow(type="closed", length = unit(0.1, "inches")), show.legend = FALSE, end_cap = circle(.1, 'inches')) +
+    geom_node_point(color = "lightblue", size = 5) +
+    geom_node_text(aes(label = name)) + 
+    labs(title="Graph of Top 100 Bigrams in All Data") + 
+    theme_void()
+
+```
+
+The arrows in the plot above directionally point from the first word to the second word of the bigram. We see that "the" is a major node, as a member in many of the most common bigrams. We also see that the tree is relatively connected, with the only top 100 bigram not connected to any other word being "more than". Below is a similar tree of bigrams, this time with neither word being a stop word.
+```{r bigram_vis_no_stops}
+igraph_nostop <- bigram_counts %>%
+    filter(!(word1 %in% stop_words$word),!(word2 %in% stop_words$word)) %>%
+    arrange(desc(count)) %>%
+    head(20) %>%
+    graph_from_data_frame()
+
+ggraph(igraph_nostop) +
+    geom_edge_link(aes(edge_alpha = count), arrow = arrow(type="closed", length = unit(0.1, "inches")), show.legend = FALSE, end_cap = circle(.1, 'inches')) +
+    geom_node_point(color = "lightblue", size = 5) +
+    geom_node_text(aes(label = name)) + 
+    labs(title="Graph of Top 20 Bigrams in All Data Without Stop Words") + 
+    theme_void()
+```
+
+We generally see very few common edges between words. The most common non-stop-word bigrams seem to be proper nouns or common two-word phrases. Stop words, although lacking in meaning, are the main connectors in language, so it makes sense that we see very few cross-bigram connections in the above graph.  
   
-For bigrams, we can also produce graph-like charts that show the most common links between words. This is done with the igraph and ggraph packages. Below, we have produced such a graph for the 500 most common bigrams across all training data.
+## Next Steps
+After exploring the training data set, we have a good sense for what is in it and the general distribution of language across each data file type (news, blogs, Twitter). The next step is to begin crafting the predictive model using n-gram data from our data set. We will be applying a probabilistic language model to the data set, recording counts of n-grams to infer probabilities of these n-grams for prediction. We will also test some enhancing mechanisms to better our predictions, such as part-of-speech tagging and sentiment analysis. 
+  
+Challenges for the model include out-of-vocabulary words/data, data size, and algorithm runtime. Although runtime will likely not be a huge deal for our model, we may need to sample the data in an intelligent, random way to create the model, or read and process the data in chunks over a period of time to "train" the model. There are several methods for dealing with out-of-vocabulary words, including additive smoothing, backoff models, and out-of-vocabulary word tags. These will be investigated further in the modeling notebook of this project, and described in the documentation of the final model.
