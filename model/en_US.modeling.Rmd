@@ -1,0 +1,261 @@
+---
+title: "Modeling Notebook: English Language Data"
+output: html_notebook
+---
+
+## Overview
+In this notebook, we investigate various language models and their effectiveness in fitting the training and held-out data. 
+
+## Initial Considerations
+The possible choices for language models are vast, but for the purposes of this project, we will first look in to the probabilistic Markov-based language model using count and probability matrices. The main weakness in this technique is dealing with out-of-vocabulary (OOV) words when performing prediction, but there are a plethora of ways to address this weakness. Listed below are some of the most common:
+
+- Unknown Word Tagging: Replacing unknown words with <UNK>. This method can have the effect of artificially reducing perplexity scores if too many words are <UNK>.
+- Additive Smoothing: Includes Laplace variation and add-k variation. This method smooths the n-gram probability distribution, but can have drastic effects on sparse probability distributions like language models. The non-zero probability terms tend to be significantly reduced, much more than we would like.
+- Katz Backoff: A backoff method which calculates the probabilities of unseen n-grams by "backing off" to lower-order n-grams. The probability is further discounted at each backoff, so as to keep the total probability as 1. This backoff constant $\alpha$ is generally a function of the previous (n-1)-gram.
+- Stupid Backoff: A backoff method that forfeits the idea of creating a sound probability distribution, and instead uses a constant backoff constant $\alpha$. Studies have shown that an $\alpha\approx0.4$ is quite effective for language models using big data sets (where other methods may not be computationally practical).
+- Interpolation: Assigning probabilities of unseen n-grams as linear combinations of corresponding lower-order n-gram probabilities.
+- Interpolated Kneser-Ney Smoothing: An augmentation of the absolute discounting (subtracting some set value from the non-zero counts before probability calculation) that formalizes and incorporates a continuation probability, which is the probability (based on observations) that a certain word appears as a continuation in a novel context
+- Good-Turing Smoothing: Another smoothing mechanism that is often used, which adjusts count in a more intelligent way than additive smoothing. Can be quite computationally intensive, so we will likely not pursue this.
+  
+There are also several other models that may be of use in our predictions. These include:
+
+- Part-Of-Speech Tagging: Tagging parts of speeches, which has been achieved with a relatively high accuracy to date. This can be incorporated in the probability matrix by discounting unlikely combinations part-of-speech combinations. This may be unnecessary with a large enough set of training data though.
+- Co-Occurrence Matrices: Matrices that track the co-occurrence of words across different larger units of language (phrases, sentences, lines, documents, etc.). This is an interesting candidate, as it would allow us to track sentence or line context better. For example, completing the sentence "In Paris, the building that I adore the most is ___" relies on the word Paris, which is difficult to track with n-grams. Incorporating co-occurrence somehow could allow for recommending "Eiffel" as the next word.
+- Sentiment Analysis with Word Embeddings: A method for vectorizing words in a sentiment space, and thus allowing us to judge the sentiment of n-grams, sentences, and lines. This could be useful, but is likely too computationally intensive, and co-occurrence matrices could probably encapsulate a good portion of this functionality.
+
+## Chosen Methods to Analyze
+From the initial considerations, we have chosen to dive deeper into the following models, along with the base model:
+
+- Interpolated Kneser-Ney Smoothing: A tried and true method that has been shown to have particularly good results, on average
+- Stupid Backoff: A computationally lighter method that may be useful if the Interpolated Kneser-Ney Smoothing is too complex in time. We may also be able to use more of the training data with this method.
+
+Furthermore, we will also look into using co-occurrence matrices for model optimization. The difficulty here will be finding the optimal way to incorporate the co-occurrence results into our overall probability/pseudo-probability distribution.
+
+## Base Model
+### 1. Generate Counts
+The base model will use unigram, bigram, and trigram probability matrices to predict the next word given a phrase. We first download the training set of lines and extract sentences and 1-grams through 4-grams from the data. This may take a few minutes to run.
+```{r ngrams}
+suppressMessages(here::i_am("model/en_US.modeling.Rmd"))
+suppressPackageStartupMessages(require(here))
+suppressPackageStartupMessages(require(tidytext))
+suppressPackageStartupMessages(require(tidyverse))
+
+lines <- readRDS(here("data/en_US/train_en_US_lines.Rds"))
+
+sentences <- unnest_sentences(lines, sentence, line) %>% mutate(type_id = factor(type_id), sentence_id = row_number())
+
+ngrams1 <- unnest_ngrams(sentences, "word1", sentence, n=1)
+ngrams2 <- unnest_ngrams(sentences, bigram, sentence, n=2) %>%
+    separate(bigram, c("word1", "word2"), sep = " ")
+ngrams3 <- unnest_ngrams(sentences, trigram, sentence, n=3) %>%
+    separate(trigram, c("word1", "word2", "word3"), sep = " ")
+ngrams4 <- unnest_ngrams(sentences, quadrigram, sentence, n=4) %>%
+    separate(quadrigram, c("word1", "word2", "word3", "word4"), sep = " ")
+```
+
+Now, we can start making our count and conditional probability matrices. The conditional probabilities of a particular n-gram given an (n-1)-gram are calculated to be:
+$$P(w_n|w_{1:n-1}) = \frac{C(w_1 \dots w_n)}{C(w_1 \dots w_{n-1})}$$
+This follows from Maximum Likelihood Estimation. For unigrams, this is simply the proportion of a specific unigram over all unigrams and is calculated very easily as a 1-D vector. For the other n-grams, we get matrices with the (n-1)-grams $w_{1:i-1}$ listed in the rows and 1-grams $w_i$ in the columns, which end up being very large matrices.
+
+```{r unigram_counts}
+ngrams1_stats <- as_tibble(ngrams1) %>%
+    group_by(word1) %>%
+    summarize(count = n()) %>%
+    arrange(desc(count))
+ngrams1_stats
+```
+
+As we see, the sample matches our full data set pretty well in terms of top words! Next, we tackle the other ngram counts.
+
+```{r ngram_counts}
+ngrams2_stats <- as_tibble(ngrams2) %>%
+    group_by(word1, word2) %>%
+    summarize(count = n())
+ngrams2_stats
+ngrams3_stats <- as_tibble(ngrams3) %>%
+    group_by(word1, word2, word3) %>%
+    summarize(count = n())
+ngrams3_stats
+ngrams4_stats <- as_tibble(ngrams4) %>%
+    group_by(word1, word2, word3, word4) %>%
+    summarize(count = n())
+ngrams4_stats
+
+rm(list=c("ngrams1","ngrams2","ngrams3","ngrams4"))
+```
+
+We immediately see quite a lot of profanities. Let's get rid of these we will be using the standard [LDNOOBW](https://github.com/LDNOOBW/List-of-Dirty-Naughty-Obscene-and-Otherwise-Bad-Words/blob/master/en) available on github to filter the words. These have been downloaded into the project's file system.
+```{r filter_profanities}
+profanities <- readLines(here("data/en_US/profanity_en_US.txt"))
+ngrams1_stats <- ngrams1_stats %>% 
+    filter(!(word1 %in% profanities))
+ngrams2_stats <- ngrams2_stats %>% 
+    filter(!(word1 %in% profanities), !(word2 %in% profanities))
+ngrams3_stats <- ngrams3_stats %>% 
+    filter(!(word1 %in% profanities), !(word2 %in% profanities), !(word3 %in% profanities))
+ngrams4_stats <- ngrams4_stats %>% 
+    filter(!(word1 %in% profanities), !(word2 %in% profanities), !(word3 %in% profanities), !(word4 %in% profanities))
+```
+
+Some profanities that are misspelled or distorted will still remain, but the majority of them should be filtered out now.  
+  
+### 2. Generate Probabilities
+The probability matrix for unigram is simply the count of a particular unigram over the count of all unigrams. The probability matrix for other n-grams are a bit more involved. Let's take a stab at it below.
+```{r ngram_probs}
+ngrams4_stats <- left_join(ngrams4_stats, ngrams3_stats, by=c("word1", "word2", "word3"))
+ngrams3_stats <- left_join(ngrams3_stats, ngrams2_stats, by=c("word1", "word2"))
+ngrams2_stats <- left_join(ngrams2_stats, ngrams1_stats, by=c("word1"))
+
+ngrams1_stats <- ngrams1_stats %>% 
+    mutate(log_cond_prob = log10(count/sum(count)))
+
+ngrams4_stats <- ngrams4_stats %>%
+    rename(
+        ngrams4_count = count.x,
+        ngrams3_count = count.y
+    ) %>%
+    mutate(log_cond_prob = log10(ngrams4_count/ngrams3_count))
+ngrams3_stats <- ngrams3_stats %>%
+    rename(
+        ngrams3_count = count.x,
+        ngrams2_count = count.y
+    ) %>%
+    mutate(log_cond_prob = log10(ngrams3_count/ngrams2_count))
+ngrams2_stats <- ngrams2_stats %>%
+    rename(
+        ngrams2_count = count.x,
+        ngrams1_count = count.y
+    ) %>%
+    mutate(log_cond_prob = log10(ngrams2_count/ngrams1_count))
+```
+Note that we are using log-10 probabilities to prevent numeric underflow while calculating total probabilities. These probabilities constitute the base model! For prediction, we would:
+
+1. Parse the prediction input into words.
+2. Use the last n-1 words to filter the rows of the relevant stats table.
+3. Choose the nth word with the highest conditional probability as the predicted next word.
+
+Let's formalize this into a function.
+```{r base_model_predict}
+#' base_model_predict: Uses the base 4-gram probability model to predict future words
+#' stats: Stats df for 4-grams
+#' string: Input string to predict the next word
+base_model_predict <- function(string) {
+    df <- data.frame(line = string)
+    trigram_rows <- unnest_ngrams(df, word, line, n=1) %>% tail(3)
+    trigram <- trigram_rows$word
+    pred_row <- ngrams4_stats %>%
+        filter(word1==trigram[1], word2==trigram[2], word3==trigram[3]) %>%
+        arrange(desc(log_cond_prob)) %>%
+        head(1)
+    pred_row$word4
+}
+
+str <- "You're the reason why I smile everyday. Can you follow me please? It would mean the"
+base_model_predict(str)
+
+str <- "Very early observations on the Bills game: Offense still struggling but the"
+base_model_predict(str)
+
+system.time(base_model_predict(str))
+```
+
+As we see in the second string, we have an issue with out-of-vocabulary n-grams. To address this, we will be look into two different methods: Interpolated Kneser-Ney Smoothing and Stupid Backoff. Note that the base model has already taken quite a long time, so let's first try to optimize this before pursuing these additional methods.
+
+## Performance Optimization
+### 1. Faster Lookup with Data.Table
+This speed improvement tip comes from [this article](https://www.r-bloggers.com/20 17/03/fast-data-lookups-in-r-dplyr-vs-data-table/). Below, we see the vast difference in lookup speed between data.frame and indexeddata.table.
+```{r morph_ngrams4_stats}
+system.time(ngrams4_stats[ngrams4_stats$word1=="word",])
+system.time(subset(ngrams4_stats, word1=="word"))
+system.time(ngrams4_stats %>% filter(word1=="word"))
+
+mod_ngrams4_stats <- data.table(mod_ngrams4_stats)
+setindex(mod_ngrams4_stats, word1)
+setindex(mod_ngrams4_stats, word2)
+setindex(mod_ngrams4_stats, word3)
+setindex(mod_ngrams4_stats, word4)
+setindex(mod_ngrams4_stats, log_cond_prob)
+
+system.time(mod_ngrams4_stats[word1=="word"])
+```
+Once an index is set on a data.table, the lookup becomes extremely fast, in this case 86 times (!) faster. This is fantastic for our big data.  
+  
+
+
+### 2. Using Trigrams Instead of Quadrigrams
+Given the size of the quadrigram stats probability data frame, it may be better to employ the trigram model instead for prediction. Below, we test the difference in prediction times.
+```{r trigram_vs_quadrigram}
+system.time(base_model_predict(str))
+
+trigram_predict <- function(string){
+    df <- data.frame(line = string)
+    bigram_rows <- unnest_ngrams(df, word, line, n=1) %>% tail(2)
+    bigram <- bigram_rows$word
+    pred_row <- ngrams3_stats %>%
+        filter(word1==bigram[1], word2==bigram[2]) %>%
+        arrange(desc(log_cond_prob)) %>%
+        head(1)
+    pred_row$word3
+}
+
+system.time(trigram_predict(str))
+```
+The elapsed time is immediately improved by a factor of about 3. This is likely due to fewer conditions in the filter, as well as the smalled size of the ngram3_stats. For the rest of this project, we will be using primarily trigrams for prediction, but we will verify in the Perplexity section below that the perplexity is not vastly effected by going from 4-grams to 3-grams for prediction.  
+  
+## Dealing with OOV N-Grams
+
+### 1. Stupid Backoff
+The stupid backoff method is extremely simple. The basic principle is to deal with OOV n-grams by backing up to (n-1)-grams and using those to estimate the n-gram probability (with some discount) instead. This method is often used for very large data sets, and has been shown to have very good results. We will implement it below, slightly modifying to calculate the predicted word from all n-gram models, but choosing the best one of those based on log-10 conditional probability (using discount, of course).
+```{r stupid_backoff_predict}
+stupid_backoff_predict <- function(string, lambda = 0.4) {
+    df <- data.frame(line = string)
+    trigram_rows <- unnest_ngrams(df, word, line, n=1) %>% tail(3)
+    trigram <- trigram_rows$word
+    
+    stats3 <- ngrams3_stats
+    pred_row3 <- stats3 %>%
+        filter(word1==trigram[2], word2==trigram[3]) %>%
+        arrange(desc(log_cond_prob)) %>%
+        head(1) %>%
+        mutate(log_cond_prob = log_cond_prob + log10(lambda)) %>%
+        rename(pred_word = word3)
+    pred_row <- pred_row3
+        
+    stats2 <- ngrams2_stats
+    pred_row2 <- stats2 %>%
+        filter(word1==trigram[3]) %>%
+        arrange(desc(log_cond_prob)) %>%
+        head(1) %>%
+        mutate(log_cond_prob = log_cond_prob + (2*log10(lambda))) %>%
+        rename(pred_word = word2)
+    if(nrow(pred_row)==0){
+        pred_row <- pred_row2
+    } else if(pred_row2$log_cond_prob > pred_row$log_cond_prob) {
+        pred_row <- pred_row2
+    }
+
+    stats1 <- ngrams1_stats
+    pred_row1 <- stats1 %>%
+        arrange(desc(log_cond_prob)) %>%
+        head(1) %>%
+        mutate(log_cond_prob = log_cond_prob + (3*log10(lambda))) %>%
+        rename(pred_word = word1)
+    if(nrow(pred_row)==0){
+        pred_row <- pred_row1
+    } else if(pred_row1$log_cond_prob > pred_row$log_cond_prob) {
+        pred_row <- pred_row1
+    }
+    
+    pred_row$pred_word
+}
+
+str <- "Very early observations on the Bills game: Offense still struggling but the"
+stupid_backoff_predict(str)
+
+system.time(stupid_backoff_predict(str))
+```
+
+This prediction does not really make much sense, but the base model does not even generate a prediction for this string, so we have made some progress in addressing OOV n-grams.
+
+### 2. Interpolated Kneser-Ney Smoothing
+
