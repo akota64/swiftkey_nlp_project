@@ -330,8 +330,8 @@ The co-occurrence score will be incorporated into the log_cond_probs of each of 
 $$S = log(S_{sb}(w_j|w_{1:n-1})) + \beta C_j$$
 for those $w_j$ that have a co-occurrence score, and
 $$S = log(S_{sb}(w_j|w_{1:n-1})) + \eta$$
-for those that do not. To reduce the number of parameters we have to train, we will take
-$$\eta = min(\beta C_j)-1$$
+for those that do not. To reduce the number of parameters we have to train, we will dynamically set
+$$\eta = min(\beta C_j)-\beta$$
 and tune $\beta$ accordingly. Here, $S_{sb}$ denotes the discounted conditional log-10 probability that comes from stupid backoff, which itself can no longer be considered as a probability (hence the use of $S$ instead of $P$).
 
 This procedure is now implemented below.
@@ -352,7 +352,7 @@ get_co_scores <- function(string){
         setnames(dt, "freq", paste0("log_prob",i))
     }
         
-    dt <- dt[, avg_log_prob:=rowSums(.SD)/(ncol(dt)-1), .SDcols=2:ncol(dt)][,c("word2","avg_log_prob")]
+    dt <- dt[, co_score:=rowSums(.SD)/(ncol(dt)-1), .SDcols=2:ncol(dt)][,c("word2","co_score")]
     dt
     
 }
@@ -364,7 +364,26 @@ We understand that this is a naive implementation, and that a more sound impleme
   
 The last step is to incorporate the co-occurrence results with the stupid backoff method. This is done below.
 ```{r full_model}
-predict_next_word <- function(string, lambda = 0.4) {
+predict_next_word <- function(string, lambda = 0.4, beta = 0.5) {
+    co_scores <- get_co_scores(string)
+    eta_co_score <- min(co_scores$co_score, na.rm = TRUE) - 1
+    if(eta_co_score==Inf){eta_co_score <- -2}
+    trigram_rows <- unnest_ngrams(data.frame(line=string), word, line, n=1) %>% 
+        tail(3) %>% 
+        arrange(desc(row_number()))
+    trigram <- trigram_rows$word
+    log_lambda <- log10(lambda)
     
+    pred_rows4 <- ngrams4_stats[word1==trigram[3] & word2==trigram[2] & word3==trigram[1]]
+    pred_rows4 <- merge(pred_rows4, co_scores, by.x = "word4", by.y = "word2", all.x = TRUE, all.y = FALSE)
+    pred_rows4$co_score[is.na(pred_rows4$co_score)] <- eta_co_score
+    pred_rows4$score <- pred_rows4$log_cond_prob + (beta*pred_rows4$co_score)
+    pred_rows4 <- pred_rows4[order(-score)][1]
+    preds <- data.frame(word=pred_rows4$word4, score=pred_rows4$score)
+    
+    pred_word <- preds[which(preds$score == max(preds$score, na.rm = TRUE)),]$word
+    pred_word
 }
+
+predict_next_word("You're the reason why I smile everyday. Can you follow me please? It would mean the")
 ```
