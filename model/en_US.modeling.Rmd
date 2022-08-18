@@ -234,7 +234,7 @@ The elapsed time is improved drastically compared to the previous one using the 
 ### 1. Modified Stupid Backoff Implementation
 The stupid backoff method is extremely simple. The basic principle is to deal with OOV n-grams by backing up to (n-1)-grams and using those to estimate the n-gram probability (with some discount) instead. This method is often used for very large data sets, and has been shown to have very good results. We will implement it below, slightly modifying to calculate the predicted word from all n-gram models, but choosing the best one of those based on log-10 conditional probability (using discount at each descent, of course).
 ```{r stupid_backoff_predict}
-stupid_backoff_predict <- function(string, lambda = 0.4) {
+stupid_backoff_predict <- function(string, lambda = 0.2) {
     df <- data.frame(line = string)
     trigram_rows <- unnest_ngrams(df, word, line, n=1) %>% 
         tail(3) %>% 
@@ -270,9 +270,60 @@ system.time(stupid_backoff_predict(str))
 This prediction does not really make much sense, but the base model does not even generate a prediction for this string, so we have made some progress in addressing OOV n-grams. Also, note the speed of the algorithm. It only took 16 ms to evaluate the best word based on all 4 n-gram models!
 
 ### 2. Tuning Lambda
+Now, we will try out various lambda's on our held-out set to determine which gives the highest accuracy. Unfortunately, standard perplexity cannot be used to tune the Stupid Backoff model due to its pseudo-probabilistic nature, and the effect of lambda itself on the perplexity. Thus, we will have to prepare a set of data ourselves to evaluate the accuracy. This is done below.
+```{r prepare_held_out_data}
+ho_lines <- readRDS(here("data/en_US/held_out_en_US_lines.Rds"))
 
+ho_sentences <- unnest_sentences(ho_lines, sentence, line) %>% 
+    mutate(type_id = factor(type_id), sentence_id = row_number())
+
+ho_words <- unnest_ngrams(ho_sentences, word, sentence, n=1)
+
+ho_sentences <- ho_words %>% 
+    group_by(sentence_id) %>% 
+    mutate(sentence = paste(word, collapse = " ")) %>%
+    select(sentence_id, sentence) %>%
+    distinct()
+
+ho_data <- ho_sentences %>%
+    mutate(
+        string = gsub("(.*) .*$", "\\1", sentence), 
+        pred_word = gsub(".* (.*)$", "\\1", sentence)
+    ) %>%
+    select(-sentence)
+head(ho_data)
+dim(ho_data)
+
+rm(list=rm("ho_lines","ho_sentences","ho_words"))
+```
+The ho_data tibble contains a list of sentences and words to predict. We will use these to tune the stupid backoff model. It is a little big though, and we won't be able to try too many different lambda in a reasonable amount of time with this much data to test. Let's try using a random 10% of this held out set for accuracy testing.
+```{r ho_sample}
+set.seed(readLines(here("scripts/seed.txt")))
+ho_sample <- ho_data[sample(1:nrow(ho_data),nrow(ho_data)*0.1),]
+head(ho_sample)
+dim(ho_sample)
+```
+Below we test out several different lambda parameters.
+```{r tune_lambda}
+get_sb_accuracy <- function(l) {
+    acc <- sum(sapply(ho_sample$string, stupid_backoff_predict, lambda=l)==ho_sample$pred_word)/nrow(ho_sample)
+    acc
+}
+
+lambdas <- seq(0, 1, by=0.1)
+acc_by_lambda <- data.frame(lambda = lambdas, accuracy = sapply(lambdas, get_sb_accuracy))
+                            
+acc_by_lambda
+```
+
+We see an immediate difference with and without the lambda parameter, but it seems that any lambda value greater than 0 will suffice. We will use a default lambda of 0.2 from now onwards.
+```{r lambda}
+tuned_lambda <- 0.2
+```
 
 ## Co-Occurrence Matrices
+
+### 1. Model
 Co-occurrence matrices are often used in NLP for the purpose of context and sentiment analysis. In this model we will use these matrices to help guide the n-gram algorithm to the right choice of word using prior sentence context. To calculate co-occurrence matrices on our training set, we use the textmineR package in R. Co-occurrence will be tracked on a sentence-by-sentence basis (in other words, our window is 1 sentence). Only words that are not stop words will be tracked for co-occurrence, since we will be using co-occurrence for context anyways.
 ```{r generate_co_occurrence matrix}
 suppressPackageStartupMessages(require(textmineR))
@@ -331,7 +382,7 @@ $$S = log(S_{sb}(w_j|w_{1:n-1})) + \beta C_j$$
 for those $w_j$ that have a co-occurrence score, and
 $$S = log(S_{sb}(w_j|w_{1:n-1})) + \eta$$
 for those that do not. To reduce the number of parameters we have to train, we will dynamically set
-$$\eta = min(\beta C_j)-\beta$$
+$$\eta = min(\beta C_j)-\beta^2$$
 and tune $\beta$ accordingly. Here, $S_{sb}$ denotes the discounted conditional log-10 probability that comes from stupid backoff, which itself can no longer be considered as a probability (hence the use of $S$ instead of $P$).
 
 This procedure is now implemented below.
@@ -340,19 +391,23 @@ get_co_scores <- function(string){
     words <- unnest_ngrams(data.frame(line=string), word, line, n=1)$word
     words <- words[!(words %in% stop_words$word)]
     
-    dt <- co[word1==words[1]][,!"word1"]
-    dt$freq <- log10(dt$freq/max(dt$freq, na.rm = TRUE))
-    setnames(dt, "freq", "log_prob1")
-    
-    for(i in 2:length(words)){
-        x <- co[word1==words[i]]
-        x$freq <- log10(x$freq/max(x$freq, na.rm = TRUE))
+    if(length(words)==0){
+        dt <- data.table(data.frame(word2 = "", co_score = NA))
+    } else {
+        dt <- co[word1==words[1]][,!"word1"]
+        dt$freq <- log10(dt$freq/max(dt$freq, na.rm = TRUE))
+        setnames(dt, "freq", "log_prob1")
         
-        dt <- merge(dt, x, by="word2")[,!"word1"]
-        setnames(dt, "freq", paste0("log_prob",i))
+        for(i in 2:length(words)){
+            x <- co[word1==words[i]]
+            x$freq <- log10(x$freq/max(x$freq, na.rm = TRUE))
+            
+            dt <- merge(dt, x, by="word2")[,!"word1"]
+            setnames(dt, "freq", paste0("log_prob",i))
+        }
+            
+        dt <- dt[, co_score:=rowSums(.SD)/(ncol(dt)-1), .SDcols=2:ncol(dt)][,c("word2","co_score")]
     }
-        
-    dt <- dt[, co_score:=rowSums(.SD)/(ncol(dt)-1), .SDcols=2:ncol(dt)][,c("word2","co_score")]
     dt
     
 }
@@ -364,10 +419,10 @@ We understand that this is a naive implementation, and that a more sound impleme
   
 The last step is to incorporate the co-occurrence results with the stupid backoff method. This is done below.
 ```{r full_model}
-predict_next_word <- function(string, lambda = 0.4, beta = 0.5) {
-    co_scores <- get_co_scores(string)
-    eta_co_score <- min(co_scores$co_score, na.rm = TRUE) - 1
-    if(eta_co_score==Inf){eta_co_score <- -2}
+predict_next_word <- function(string, lambda = 0.2, beta = 0.55) {
+    co_scores <- suppressWarnings(get_co_scores(string))
+    eta_co_score <- suppressWarnings(min(co_scores$co_score, na.rm = TRUE)) - beta
+    if(eta_co_score==Inf){eta_co_score <- -3}
     trigram_rows <- unnest_ngrams(data.frame(line=string), word, line, n=1) %>% 
         tail(3) %>% 
         arrange(desc(row_number()))
@@ -379,11 +434,134 @@ predict_next_word <- function(string, lambda = 0.4, beta = 0.5) {
     pred_rows4$co_score[is.na(pred_rows4$co_score)] <- eta_co_score
     pred_rows4$score <- pred_rows4$log_cond_prob + (beta*pred_rows4$co_score)
     pred_rows4 <- pred_rows4[order(-score)][1]
-    preds <- data.frame(word=pred_rows4$word4, score=pred_rows4$score)
+    preds <- data.frame(word=pred_rows4$word4, log_cond_prob = pred_rows4$log_cond_prob, score=pred_rows4$score)
     
-    pred_word <- preds[which(preds$score == max(preds$score, na.rm = TRUE)),]$word
+    pred_rows3 <- ngrams3_stats[word1==trigram[2] & word2==trigram[1]]
+    pred_rows3 <- merge(pred_rows3, co_scores, by.x = "word3", by.y = "word2", all.x = TRUE, all.y = FALSE)
+    pred_rows3$co_score[is.na(pred_rows3$co_score)] <- eta_co_score
+    pred_rows3$score <- pred_rows3$log_cond_prob + (beta*pred_rows3$co_score)
+    pred_rows3 <- pred_rows3[order(-score)][1]
+    preds <- rbind(preds, data.frame(word=pred_rows3$word3, log_cond_prob = pred_rows3$log_cond_prob,
+                                     score=pred_rows3$score))
+    
+    pred_rows2 <- ngrams2_stats[word1==trigram[1]]
+    pred_rows2 <- merge(pred_rows2, co_scores, by.x = "word2", by.y = "word2", all.x = TRUE, all.y = FALSE)
+    pred_rows2$co_score[is.na(pred_rows2$co_score)] <- eta_co_score
+    pred_rows2$score <- pred_rows2$log_cond_prob + (beta*pred_rows2$co_score)
+    pred_rows2 <- pred_rows2[order(-score)][1]
+    preds <- rbind(preds, data.frame(word=pred_rows2$word2, log_cond_prob = pred_rows2$log_cond_prob,
+                                     score=pred_rows2$score))
+    
+    pred_rows1 <- ngrams1_stats
+    pred_rows1 <- merge(pred_rows1, co_scores, by.x = "word1", by.y = "word2", all.x = TRUE, all.y = FALSE)
+    pred_rows1$co_score[is.na(pred_rows1$co_score)] <- eta_co_score
+    pred_rows1$score <- pred_rows1$log_cond_prob + (beta*pred_rows1$co_score)
+    pred_rows1 <- pred_rows1[order(-score)][1]
+    preds <- rbind(preds, data.frame(word=pred_rows1$word1, log_cond_prob = pred_rows1$log_cond_prob,
+                                     score=pred_rows1$score))
+    
+    preds$score <- as.numeric(preds$score)
+    if(sum(is.na(preds$score))==nrow(preds)) {
+        pred_word <- preds[which(preds$log_cond_prob == max(preds$log_cond_prob, na.rm = TRUE)),]$word
+    } else {
+        pred_word <- preds[which(preds$score == max(preds$score, na.rm = TRUE)),]$word
+    }
     pred_word
 }
 
-predict_next_word("You're the reason why I smile everyday. Can you follow me please? It would mean the")
+str <- "You're the reason why I smile everyday. Can you follow me please? It would mean the"
+predict_next_word(str)
+system.time(predict_next_word(str))
+
+str <- "when"
+predict_next_word(str)
 ```
+
+Great! However, this system takes considerably more time than the stupid backoff without co-occurrences. Now, does this new method actually produce any difference in accuracy? We will look into this question below.
+
+### 2. Tuning Beta
+We will replicate the tuning method used before, using the CV set this time. We will only use about 1600 entries from the CV set to tune, since it takes about 1 second to process every 10 entries.
+```{r cv_data}
+cv_lines <- readRDS(here("data/en_US/cv_en_US_lines.Rds"))
+
+cv_sentences <- unnest_sentences(cv_lines, sentence, line) %>% 
+    mutate(type_id = factor(type_id), sentence_id = row_number())
+
+cv_words <- unnest_ngrams(cv_sentences, word, sentence, n=1)
+
+cv_sentences <- cv_words %>% 
+    group_by(sentence_id) %>% 
+    mutate(sentence = paste(word, collapse = " ")) %>%
+    select(sentence_id, sentence) %>%
+    distinct()
+
+cv_data <- cv_sentences %>%
+    mutate(
+        string = gsub("(.*) .*$", "\\1", sentence), 
+        pred_word = gsub(".* (.*)$", "\\1", sentence)
+    ) %>%
+    select(-sentence)
+head(cv_data)
+dim(cv_data)
+
+rm(list=rm("cv_lines","cv_sentences","cv_words"))
+
+set.seed(readLines(here("scripts/seed.txt")))
+cv_sample <- cv_data[sample(1:nrow(cv_data),nrow(cv_data)*0.02),]
+head(cv_sample)
+dim(cv_sample)
+```
+
+```{r get_acc}
+get_model_accuracy <- function(b) {
+    acc <- sum(sapply(cv_sample$string, predict_next_word, beta=b)==cv_sample$pred_word)/nrow(cv_sample)
+    acc
+}
+
+get_model_accuracy(0)
+get_model_accuracy(0.2)
+get_model_accuracy(0.4)
+get_model_accuracy(0.6)
+get_model_accuracy(0.8)
+get_model_accuracy(1)
+```
+We see that a beta of 0.6 works best here. Let's tune this even further with some finer increments around 0.6.
+```{r beta_tune}
+get_model_accuracy(0.5)
+get_model_accuracy(0.55)
+get_model_accuracy(0.65)
+get_model_accuracy(0.7)
+```
+
+Based on this further tuning, we see the best accuracy with beta=0.55. Thus, this beta value will be used for the final model.
+```{r tuned_beta}
+tuned_beta <- 0.55
+```
+
+## Model Evaluation
+You will note that our final model has a seemingly abysmal accuracy, and while this is somewhat true, we calculated the accuracy in a way that makes our model inherently undercount the true accuracy. In reality, the out-of-sample accuracy should be estimated not with sentence completion, but with the prediction of entire sentences, word-by-word. It is likely that, in these cases, certain common structures and connectors (typically stop words) would be easily predicted, such as "the" and "a" in certain 4- or 3-grams. Since no sentence ends with such words, the accuracy predicted is likely inherently lower than the true out-of-sample accuracy. For example, let's run the prediction for every word in the sentence "This is a random sentence.".
+```{r full_sentence_predict}
+predict_next_word("")
+predict_next_word("This")
+predict_next_word("This is")
+predict_next_word("This is a")
+predict_next_word("This is a random")
+```
+Now, we see that most of the predictions were wrong, but the accuracy still ended up being 40%. The words "is" and "a" were predicted correctly, but these would never occur at the end of sentences. Thus, we must specify that the model has a 10.8% sentence *completion* accuracy, but the true accuracy has yet to be calculated.
+
+## Save Model Data
+Now, we will save the data used in our model to our file system to pull the model later in the app when necessary.
+```{r save_data}
+saveRDS(ngrams1_stats, here("model/data/unigram_stats.Rds"))
+saveRDS(ngrams2_stats, here("model/data/bigram_stats.Rds"))
+saveRDS(ngrams3_stats, here("model/data/trigram_stats.Rds"))
+saveRDS(ngrams4_stats, here("model/data/quadrigram_stats.Rds"))
+saveRDS(co, here("model/data/co_matrix.Rds"))
+file.create(here("model/data/lambda.txt"))
+write_lines(tuned_lambda, here("model/data/lambda.txt"))
+file.create(here("model/data/beta.txt"))
+write_lines(tuned_beta, here("model/data/beta.txt"))
+file.create(here("model/data/seed.txt"))
+write_lines(readLines(here("scripts/seed.txt")), here("model/data/seed.txt"))
+```
+The final function to be used for prediction will be formalized in a final_model script.
