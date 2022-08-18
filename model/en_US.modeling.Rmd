@@ -14,7 +14,7 @@ The possible choices for language models are vast, but for the purposes of this 
 - Katz Backoff: A backoff method which calculates the probabilities of unseen n-grams by "backing off" to lower-order n-grams. The probability is further discounted at each backoff, so as to keep the total probability as 1. This backoff constant $\alpha$ is generally a function of the previous (n-1)-gram.
 - Stupid Backoff: A backoff method that forfeits the idea of creating a sound probability distribution, and instead uses a constant backoff constant $\alpha$. Studies have shown that an $\alpha\approx0.4$ is quite effective for language models using big data sets (where other methods may not be computationally practical).
 - Interpolation: Assigning probabilities of unseen n-grams as linear combinations of corresponding lower-order n-gram probabilities.
-- Interpolated Kneser-Ney Smoothing: An augmentation of the absolute discounting (subtracting some set value from the non-zero counts before probability calculation) that formalizes and incorporates a continuation probability, which is the probability (based on observations) that a certain word appears as a continuation in a novel context
+- Interpolated Kneser-Ney Smoothing: An augmentation of the absolute discounting (subtracting some set value from the non-zero counts before probability calculation) that formalizes and incorporates a continuation probability, which is the probability (based on observations) that a certain word appears as a continuation in a novel context. However, this could be too computationally intensive for 4-grams (for our purpose).
 - Good-Turing Smoothing: Another smoothing mechanism that is often used, which adjusts count in a more intelligent way than additive smoothing. Can be quite computationally intensive, so we will likely not pursue this.
   
 There are also several other models that may be of use in our predictions. These include:
@@ -23,11 +23,10 @@ There are also several other models that may be of use in our predictions. These
 - Co-Occurrence Matrices: Matrices that track the co-occurrence of words across different larger units of language (phrases, sentences, lines, documents, etc.). This is an interesting candidate, as it would allow us to track sentence or line context better. For example, completing the sentence "In Paris, the building that I adore the most is ___" relies on the word Paris, which is difficult to track with n-grams. Incorporating co-occurrence somehow could allow for recommending "Eiffel" as the next word.
 - Sentiment Analysis with Word Embeddings: A method for vectorizing words in a sentiment space, and thus allowing us to judge the sentiment of n-grams, sentences, and lines. This could be useful, but is likely too computationally intensive, and co-occurrence matrices could probably encapsulate a good portion of this functionality.
 
-## Chosen Methods to Analyze
-From the initial considerations, we have chosen to dive deeper into the following models, along with the base model:
+## Chosen Method
+From the initial considerations, we have chosen to dive deeper into the following model, along with the base model:
 
-- Interpolated Kneser-Ney Smoothing: A tried and true method that has been shown to have particularly good results, on average
-- Stupid Backoff: A computationally lighter method that may be useful if the Interpolated Kneser-Ney Smoothing is too complex in time. We may also be able to use more of the training data with this method.
+- Stupid Backoff: A computationally light method that has shown to be very effective on big data. We may also be able to use more of the training data and higher n-grams with this method.
 
 Furthermore, we will also look into using co-occurrence matrices for model optimization. The difficulty here will be finding the optimal way to incorporate the co-occurrence results into our overall probability/pseudo-probability distribution.
 
@@ -159,7 +158,7 @@ base_model_predict(str)
 system.time(base_model_predict(str))
 ```
 
-As we see in the second string, we have an issue with out-of-vocabulary n-grams. To address this, we will be look into two different methods: Interpolated Kneser-Ney Smoothing and Stupid Backoff. Note that the base model has already taken quite a long time, so let's first try to optimize this before pursuing these additional methods.
+As we see in the second string, we have an issue with out-of-vocabulary n-grams. To address this, we will be look into Stupid Backoff in the next section. Note that the base model has already taken quite a long time, so let's first try to optimize this before pursuing this OOV remedy.
 
 ## Performance Optimization
 ### 1. Faster Lookup with Data.Table
@@ -169,7 +168,8 @@ system.time(ngrams4_stats[ngrams4_stats$word1=="word",])
 system.time(subset(ngrams4_stats, word1=="word"))
 system.time(ngrams4_stats %>% filter(word1=="word"))
 
-mod_ngrams4_stats <- data.table(mod_ngrams4_stats)
+suppressPackageStartupMessages(require(data.table))
+mod_ngrams4_stats <- data.table(ngrams4_stats)
 setindex(mod_ngrams4_stats, word1)
 setindex(mod_ngrams4_stats, word2)
 setindex(mod_ngrams4_stats, word3)
@@ -178,75 +178,87 @@ setindex(mod_ngrams4_stats, log_cond_prob)
 
 system.time(mod_ngrams4_stats[word1=="word"])
 ```
-Once an index is set on a data.table, the lookup becomes extremely fast, in this case 86 times (!) faster. This is fantastic for our big data.  
-  
+Once an index is set on a data.table, the lookup becomes extremely fast, especially compared to dplyr::filter. Let's compare lookup speed with along multiple columns.
+```{r dplyr_dt}
+system.time(ngrams4_stats[(ngrams4_stats$word1=="of" & ngrams4_stats$word2=="the"),])
+setindex(mod_ngrams4_stats, word1, word2)
+system.time(mod_ngrams4_stats[word1=="of" & word2=="the"])
+``` 
+The difference in lookup speed is quite remarkable. For this reason, we will be using data.table from now on for the all n-gram stats (counts and probabilities).
 
+```{r to_data_table}
+ngrams1_stats <- data.table(ngrams1_stats)
+setindex(ngrams1_stats, word1)
+setindex(ngrams1_stats, log_cond_prob)
 
-### 2. Using Trigrams Instead of Quadrigrams
-Given the size of the quadrigram stats probability data frame, it may be better to employ the trigram model instead for prediction. Below, we test the difference in prediction times.
-```{r trigram_vs_quadrigram}
-system.time(base_model_predict(str))
+ngrams2_stats <- data.table(ngrams2_stats)
+setindex(ngrams2_stats, word1)
+setindex(ngrams2_stats, word2)
+setindex(ngrams2_stats, word1, word2)
+setindex(ngrams2_stats, log_cond_prob)
 
-trigram_predict <- function(string){
-    df <- data.frame(line = string)
-    bigram_rows <- unnest_ngrams(df, word, line, n=1) %>% tail(2)
-    bigram <- bigram_rows$word
-    pred_row <- ngrams3_stats %>%
-        filter(word1==bigram[1], word2==bigram[2]) %>%
-        arrange(desc(log_cond_prob)) %>%
-        head(1)
-    pred_row$word3
-}
+ngrams3_stats <- data.table(ngrams3_stats)
+setindex(ngrams3_stats, word1, word2)
+setindex(ngrams3_stats, word3)
+setindex(ngrams3_stats, word1, word2, word3)
+setindex(ngrams3_stats, log_cond_prob)
 
-system.time(trigram_predict(str))
+ngrams4_stats <- data.table(ngrams4_stats)
+setindex(ngrams4_stats, word1, word2, word3)
+setindex(ngrams4_stats, word4)
+setindex(ngrams4_stats, word1, word2, word3, word4)
+setindex(ngrams4_stats, log_cond_prob)
+
+rm("mod_ngrams4_stats")
 ```
-The elapsed time is immediately improved by a factor of about 3. This is likely due to fewer conditions in the filter, as well as the smalled size of the ngram3_stats. For the rest of this project, we will be using primarily trigrams for prediction, but we will verify in the Perplexity section below that the perplexity is not vastly effected by going from 4-grams to 3-grams for prediction.  
-  
-## Dealing with OOV N-Grams
 
-### 1. Stupid Backoff
-The stupid backoff method is extremely simple. The basic principle is to deal with OOV n-grams by backing up to (n-1)-grams and using those to estimate the n-gram probability (with some discount) instead. This method is often used for very large data sets, and has been shown to have very good results. We will implement it below, slightly modifying to calculate the predicted word from all n-gram models, but choosing the best one of those based on log-10 conditional probability (using discount, of course).
-```{r stupid_backoff_predict}
-stupid_backoff_predict <- function(string, lambda = 0.4) {
+Below is the modified base model with the 4-gram data.table used instead of data.frame.
+```{r modified_base_model_predict}
+base_model_predict <- function(string){
     df <- data.frame(line = string)
     trigram_rows <- unnest_ngrams(df, word, line, n=1) %>% tail(3)
     trigram <- trigram_rows$word
-    
-    stats3 <- ngrams3_stats
-    pred_row3 <- stats3 %>%
-        filter(word1==trigram[2], word2==trigram[3]) %>%
-        arrange(desc(log_cond_prob)) %>%
-        head(1) %>%
-        mutate(log_cond_prob = log_cond_prob + log10(lambda)) %>%
-        rename(pred_word = word3)
-    pred_row <- pred_row3
-        
-    stats2 <- ngrams2_stats
-    pred_row2 <- stats2 %>%
-        filter(word1==trigram[3]) %>%
-        arrange(desc(log_cond_prob)) %>%
-        head(1) %>%
-        mutate(log_cond_prob = log_cond_prob + (2*log10(lambda))) %>%
-        rename(pred_word = word2)
-    if(nrow(pred_row)==0){
-        pred_row <- pred_row2
-    } else if(pred_row2$log_cond_prob > pred_row$log_cond_prob) {
-        pred_row <- pred_row2
-    }
+    pred_rows <- ngrams4_stats[word1==trigram[1] & word2==trigram[2] & word3==trigram[3]]
+    pred_rows <- pred_rows[order(-log_cond_prob)][1]
+    pred_rows$word4
+}
 
-    stats1 <- ngrams1_stats
-    pred_row1 <- stats1 %>%
-        arrange(desc(log_cond_prob)) %>%
-        head(1) %>%
-        mutate(log_cond_prob = log_cond_prob + (3*log10(lambda))) %>%
-        rename(pred_word = word1)
-    if(nrow(pred_row)==0){
-        pred_row <- pred_row1
-    } else if(pred_row1$log_cond_prob > pred_row$log_cond_prob) {
-        pred_row <- pred_row1
-    }
+str <- "You're the reason why I smile everyday. Can you follow me please? It would mean the"
+base_model_predict(str)
+system.time(base_model_predict(str))
+```
+The elapsed time is improved drastically compared to the previous one using the data.frame and dplyr, by several orders of magnitude in fact. This should be good enough for now.
+  
+## Dealing with OOV N-Grams
+
+### 1. Modified Stupid Backoff Implementation
+The stupid backoff method is extremely simple. The basic principle is to deal with OOV n-grams by backing up to (n-1)-grams and using those to estimate the n-gram probability (with some discount) instead. This method is often used for very large data sets, and has been shown to have very good results. We will implement it below, slightly modifying to calculate the predicted word from all n-gram models, but choosing the best one of those based on log-10 conditional probability (using discount at each descent, of course).
+```{r stupid_backoff_predict}
+stupid_backoff_predict <- function(string, lambda = 0.4) {
+    df <- data.frame(line = string)
+    trigram_rows <- unnest_ngrams(df, word, line, n=1) %>% 
+        tail(3) %>% 
+        arrange(desc(row_number()))
+    trigram <- trigram_rows$word
+    log_lambda <- log10(lambda)
     
-    pred_row$pred_word
+    pred_rows4 <- ngrams4_stats[word1==trigram[3] & word2==trigram[2] & word3==trigram[1]]
+    pred_rows4 <- pred_rows4[order(-log_cond_prob)][1]
+    preds <- data.frame(word=pred_rows4$word4, prob=pred_rows4$log_cond_prob)
+    
+    pred_rows3 <- ngrams3_stats[word1==trigram[2] & word2==trigram[1]]
+    pred_rows3 <- pred_rows3[order(-log_cond_prob)][1]
+    preds <- rbind(preds, c(pred_rows3$word3, pred_rows3$log_cond_prob + log_lambda))
+        
+    pred_rows2 <- ngrams2_stats[word1==trigram[1]]
+    pred_rows2 <- pred_rows2[order(-log_cond_prob)][1]
+    preds <- rbind(preds, c(pred_rows2$word2, pred_rows2$log_cond_prob + (2*log_lambda)))
+    
+    pred_rows1 <- ngrams1_stats[order(-log_cond_prob)][1]
+    preds <- rbind(preds, c(pred_rows1$word1, pred_rows1$log_cond_prob + (3*log_lambda)))
+    
+    pred_word <- preds[which(as.numeric(preds$prob) == max(as.numeric(preds$prob), na.rm = TRUE)),]$word
+    pred_word
 }
 
 str <- "Very early observations on the Bills game: Offense still struggling but the"
@@ -255,7 +267,104 @@ stupid_backoff_predict(str)
 system.time(stupid_backoff_predict(str))
 ```
 
-This prediction does not really make much sense, but the base model does not even generate a prediction for this string, so we have made some progress in addressing OOV n-grams.
+This prediction does not really make much sense, but the base model does not even generate a prediction for this string, so we have made some progress in addressing OOV n-grams. Also, note the speed of the algorithm. It only took 16 ms to evaluate the best word based on all 4 n-gram models!
 
-### 2. Interpolated Kneser-Ney Smoothing
+### 2. Tuning Lambda
 
+
+## Co-Occurrence Matrices
+Co-occurrence matrices are often used in NLP for the purpose of context and sentiment analysis. In this model we will use these matrices to help guide the n-gram algorithm to the right choice of word using prior sentence context. To calculate co-occurrence matrices on our training set, we use the textmineR package in R. Co-occurrence will be tracked on a sentence-by-sentence basis (in other words, our window is 1 sentence). Only words that are not stop words will be tracked for co-occurrence, since we will be using co-occurrence for context anyways.
+```{r generate_co_occurrence matrix}
+suppressPackageStartupMessages(require(textmineR))
+
+## Term co-occurrence matrix generated from document-term matrix
+dtm <- suppressWarnings(CreateDtm(sentences$sentence, stopword_vec = stop_words$word))
+co_mat <- Dtm2Tcm(dtm)
+rm(dtm)
+dim(co_mat)
+```
+As we can see, our matrix is absolutely massive, with 18.1B entries. However, this matrix is sparse, and so it can be compressed into a nice column format. For this type of sparse matrix (dgCMatrix), this is done with a simple summary call.
+```{r column_form_co_ocurrence}
+co <- summary(co_mat)
+dim(co)
+head(co)
+co_names <- rownames(co_mat)
+head(co_names)
+```
+This new dense co-occurence "matrix" has only 49.1M entries, which is significantly more manageable already. We will have to track the word ID's (i,j in the matrix) in a separate vector though, which is the job of co_names. Interestingly, this dense matrix representation is actually larger in object size than the sparse matrix representation, which shows the efficiency of dgCMatrix. The reduction in entry number makes it more practical for us to manipulate and process the data though.  
+  
+We can transform the matrix to a data table now for ease, and rename the columns.
+```{r pre_proc_co}
+co <- data.table(co)
+
+setnames(co, "i", "word1")
+setnames(co, "j", "word2")
+setnames(co, "x", "freq")
+
+co$word1 <- co_names[co$word1]
+co$word2 <- co_names[co$word2]
+
+setindex(co, word1)
+setindex(co, word2)
+setindex(co, word1, word2)
+indices(co)
+```
+
+Now checking the look up time for the co-occurrence matrix, we get:
+```{r co_check}
+system.time(co[word1=="word"])
+```
+
+which is fantastic! We will now move on to creating some kind of procedure using this matrix to assist our predictions.  
+  
+The procedure will go as follows:
+
+1. User input will be parsed into sentences. Only the last unfinished sentence will be used.
+2. The last sentence will be tokenized into words, and stop words will be removed. The remaining words will be referred to simply as words from now on. We will call these words $w_i$, so we have:
+$$w_1, \dots , w_n$$
+3. For each of the words, we will extract the non-zero co-occurrences and quantify the co-occurrences by proportion of total sentences containing the word that also contains the other word, a co-occurrence rate. Basically, it is the empirical probability of one word being in the sentence given some other word is already in the sentence. These will be denoted:
+$$P_{ij} = P(w_j \text{ in sentence}|w_i \text{ in sentence})$$
+4. These probabilities will simply be multiplied across all of the words in our sentence, which amounts to adding the log-probabilities, and then the log probabilities will be divided by the total number of words in our sentence. This will be referred to as the co-occurrence score $C_j$. Multiplication (adding logs) is used to amplify this score for words that frequently occur together, keeping them near 1 (near 0 for logs). For example, let's say we have 2 words in our sentence: "brother" and "mother". Let's say our vocabulary has 2 words that co-occur with "brother", "sister" and "friend", while "sister" and "father" co-occur with "mother". The co-occurrence score for sister is calculated as the log-probability of occurring with brother plus the log-probability of occurring with mother. The other co-occurrences are ignored. We would only like to retain words that have previously co-occurred with each of the words in the matrix, and ignore novelties. (Novelties can be accounted for in a future implementation with Interpolated Kneser-Ney Smoothing)
+5. The co-occurrence score will be incorporated into the final model's log-probabilities only for those words that already work with the given n-grams. This means that we will not be considering novelties (strings that are not already in our training set) just based on context, but instead, incorporating context into our existing models. The pursuit of novelty prediction should also come with other grammatical training methods (like POS tagging) which may be incorporated in the future.  
+The co-occurrence score will be incorporated into the log_cond_probs of each of the stats tables in the following way, creating a new score variable $S$ to denote the new quantity (which is clearly no longer a probability):
+$$S = log(S_{sb}(w_j|w_{1:n-1})) + \beta C_j$$
+for those $w_j$ that have a co-occurrence score, and
+$$S = log(S_{sb}(w_j|w_{1:n-1})) + \eta$$
+for those that do not. To reduce the number of parameters we have to train, we will take
+$$\eta = min(\beta C_j)-1$$
+and tune $\beta$ accordingly. Here, $S_{sb}$ denotes the discounted conditional log-10 probability that comes from stupid backoff, which itself can no longer be considered as a probability (hence the use of $S$ instead of $P$).
+
+This procedure is now implemented below.
+```{r get_co_occurrence_scores}
+get_co_scores <- function(string){
+    words <- unnest_ngrams(data.frame(line=string), word, line, n=1)$word
+    words <- words[!(words %in% stop_words$word)]
+    
+    dt <- co[word1==words[1]][,!"word1"]
+    dt$freq <- log10(dt$freq/max(dt$freq, na.rm = TRUE))
+    setnames(dt, "freq", "log_prob1")
+    
+    for(i in 2:length(words)){
+        x <- co[word1==words[i]]
+        x$freq <- log10(x$freq/max(x$freq, na.rm = TRUE))
+        
+        dt <- merge(dt, x, by="word2")[,!"word1"]
+        setnames(dt, "freq", paste0("log_prob",i))
+    }
+        
+    dt <- dt[, avg_log_prob:=rowSums(.SD)/(ncol(dt)-1), .SDcols=2:ncol(dt)][,c("word2","avg_log_prob")]
+    dt
+    
+}
+
+get_co_scores("My favorite thing about Paris, France is")
+system.time(get_co_scores("My favorite thing about Paris, France is"))
+```
+We understand that this is a naive implementation, and that a more sound implementation would involve retaining all words that match at least one of the sentence words, instead of all of them, and simply penalizing every time these words don't match well with a word in the sentence. However, this naive implementation will be used for now. A later release of the prediction algorithm could include a better method to incorporate co-occurrences.  
+  
+The last step is to incorporate the co-occurrence results with the stupid backoff method. This is done below.
+```{r full_model}
+predict_next_word <- function(string, lambda = 0.4) {
+    
+}
+```
