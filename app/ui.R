@@ -1,33 +1,35 @@
-#
-# This is the user-interface definition of a Shiny web application. You can
-# run the application by clicking 'Run App' above.
-#
-# Find out more about building applications with Shiny here:
-#
-#    http://shiny.rstudio.com/
-#
-
+here::i_am("app/ui.R")
+suppressPackageStartupMessages(require(here))
 library(shiny)
+library(tidyverse)
+library(shinycssloaders)
 
-# Define UI for application that draws a histogram
 shinyUI(fluidPage(
 
-    # Application title
-    titlePanel("Old Faithful Geyser Data"),
-
-    # Sidebar with a slider input for number of bins
-    sidebarLayout(
-        sidebarPanel(
-            sliderInput("bins",
-                        "Number of bins:",
-                        min = 1,
-                        max = 50,
-                        value = 30)
+    titlePanel("Autocomplete Application"),
+    
+    em("Enter text in the sidebar and click 'Submit' to predict the next word. Click the documentation tab for more information."),
+    hr(),
+    tabsetPanel(
+        tabPanel(
+            "Prediction",
+            hr(style = "border-top: 1px solid #ffffff;"),
+            sidebarLayout(
+                sidebarPanel(
+                    textAreaInput("string", "Enter Text To Complete Here"),
+                    submitButton("Submit")
+                ),
+                mainPanel(
+                    uiOutput("word",) %>% withSpinner()
+                )
+            )
         ),
-
-        # Show a plot of the generated distribution
-        mainPanel(
-            plotOutput("distPlot")
+        tabPanel(
+            "Documentation",
+            hr(style = "border-top: 1px solid #ffffff;"),
+            p("This autocomplete application predicts the next word in phrases/sentences provided as input in the sidebar. The methods used for prediction are explained in the sections below."),
+            h2("Methods"),
+            h2("References")
         )
     )
 ))

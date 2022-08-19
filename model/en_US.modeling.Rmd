@@ -466,7 +466,7 @@ predict_next_word <- function(string, lambda = 0.2, beta = 0.55) {
     } else {
         pred_word <- preds[which(preds$score == max(preds$score, na.rm = TRUE)),]$word
     }
-    pred_word
+    pred_word[1]
 }
 
 str <- "You're the reason why I smile everyday. Can you follow me please? It would mean the"
