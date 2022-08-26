@@ -42,4 +42,5 @@ We see that this probability no longer corresponds to a true probability, so it 
 ## References
 
 [1] Jurafsky, D., &amp; Martin, J. H. (2014). Speech and language processing. Pearson. 
+
 [2] [Large Language Models in Machine Translation](https://aclanthology.org/D07-1090) (Brants et al., EMNLP 2007)
