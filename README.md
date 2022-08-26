@@ -53,15 +53,15 @@ $$P_{ij} = P(w_j \text{ in sentence}|w_i \text{ in sentence})$$
 
 $$S_f = log(S_{sb}(w_j|w_{1:n-1})) + \beta C_j$$
 
-  for those $w_j$ that have a co-occurrence score, and
+   for those $w_j$ that have a co-occurrence score, and
 
 $$S_f = log(S_{sb}(w_j|w_{1:n-1})) + \eta$$
 
-  for those that do not. To reduce the number of parameters we have to train, we will dynamically set
+   for those that do not. To reduce the number of parameters we have to train, we will dynamically set
 
 $$\eta = min(\beta C_j)-\beta^2$$
 
-  and tune $\beta$ accordingly. Here, $S_{sb}$ denotes the discounted conditional probability that comes from stupid backoff.
+   and tune $\beta$ accordingly. Here, $S_{sb}$ denotes the discounted conditional probability that comes from stupid backoff.
 
 6. The final prediction method uses $S_f$ in the modified "stupid backoff" method explained above (instead of $S_{sb}$) to predict the next word.
 
