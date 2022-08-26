@@ -49,9 +49,7 @@ $$P_{ij} = P(w_j \text{ in sentence}|w_i \text{ in sentence})$$
 
 4. These probabilities $P_{ij}$ are simply be multiplied across all of the words $w_i$ in our sentence (which amounts to adding the log-probabilities), and then the log probabilities are divided by the total number of words in our sentence. This will be referred to as the co-occurrence score for a word $w_j$, denoted as $C_j$. Multiplication (adding logs) is used to amplify this score for words that frequently occur together, keeping them near 1 (near 0 for logs). For example, let's say we have 2 words in our sentence: "brother" and "mother". Let's say our vocabulary has 2 words that co-occur with "brother", "sister" and "friend", while "sister" and "father" co-occur with "mother". The co-occurrence score for sister is calculated as the log-probability of occurring with brother plus the log-probability of occurring with mother. The other co-occurrences are ignored. We would only like to retain words that have previously co-occurred with each of the words in the matrix, and ignore novelties. (Novelties can be accounted for in a future implementation with a modified version of this co-occurrence method and Interpolated Kneser-Ney Smoothing)
 
-5. The co-occurrence score is incorporated into the final model's log-probabilities only for those words $w_j$ that already work with the given n-grams (only where $w_n=w_j$, given $w{1:(n-1)}$). This means that we will not be considering novel n-grams (n-grams that are not already in our training set) just based on context, but instead, attempting to incorporate context into our existing model. The pursuit of novelty prediction should also come with other grammatical training methods (like POS tagging), which may be incorporated in the future.  
-
-The co-occurrence score will be incorporated into the log conditional probabilities of each of the n-gram models in the following way, creating a new score variable $S_f$ to denote the new quantity (which is clearly no longer a probability):
+5. The co-occurrence score is incorporated into the final model's log-probabilities only for those words $w_j$ that already work with the given n-grams (only where $w_n=w_j$, given $w{1:(n-1)}$). This means that we will not be considering novel n-grams (n-grams that are not already in our training set) just based on context, but instead, attempting to incorporate context into our existing model. The pursuit of novelty prediction should also come with other grammatical training methods (like POS tagging), which may be incorporated in the future. The co-occurrence score is incorporated into the log conditional probabilities of each of the n-gram models in the following way, creating a new score variable $S_f$ to denote the new quantity (which is clearly no longer a probability):
 
 $$S_f = log(S_{sb}(w_j|w_{1:n-1})) + \beta C_j$$
 
@@ -64,6 +62,8 @@ for those that do not. To reduce the number of parameters we have to train, we w
 $$\eta = min(\beta C_j)-\beta^2$$
 
 and tune $\beta$ accordingly. Here, $S_{sb}$ denotes the discounted conditional probability that comes from stupid backoff.
+
+6. The final prediction method uses $S_f$ in the modified "stupid backoff" method explained above (instead of $S_{sb}$) to predict the next word.
 
 ## References
 
