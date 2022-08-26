@@ -53,11 +53,11 @@ $$P_{ij} = P(w_j \text{ in sentence}|w_i \text{ in sentence})$$
 
 $$S_f = log(S_{sb}(w_j|w_{1:n-1})) + \beta C_j$$
 
-&nbsp; &nbsp; &nbsp; &nbsp; &nbsp; for those $w_j$ that have a co-occurrence score, and
+&nbsp; &nbsp; &nbsp; &nbsp; for those $w_j$ that have a co-occurrence score, and
 
 $$S_f = log(S_{sb}(w_j|w_{1:n-1})) + \eta$$
 
-&nbsp; &nbsp; &nbsp; &nbsp; &nbsp; for those that do not. To reduce the number of parameters we have to train, we will dynamically set
+&nbsp; &nbsp; &nbsp; &nbsp; for those that do not. To reduce the number of parameters we have to train, we will dynamically set
 
 $$\eta = min(\beta C_j)-\beta^2$$
 
