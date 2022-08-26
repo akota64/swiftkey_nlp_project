@@ -21,11 +21,23 @@ In this project, a 4-gram language model is implemented to make next-word predic
 
 
 ## Dataset Information
-The dataset used in this project has been kindly provided by [SwiftKey](https://www.microsoft.com/en-us/swiftkey?activetab=pivot_1%3aprimaryr2), a subsidiary of Microsoft that specializes in their namesake smart keyboard product. The dataset contains text data separated by language (US English, German, Russian, and Finnish) and by source (news, blogs, Twitter). The data is presented as lines in simple .txt files, and the total data set after de-compression comes out to be 1.41 GB. Click on [this link](https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip) to download the full dataset provided by SwiftKey.
+The dataset used in this project has been kindly provided by [SwiftKey](https://www.microsoft.com/en-us/swiftkey?activetab=pivot_1%3aprimaryr2), a subsidiary of Microsoft that specializes in their namesake smart keyboard product. The dataset contains text data separated by language (US English, German, Russian, and Finnish) and by source (news, blogs, Twitter). The data is presented as lines in simple .txt files, and the total data set after de-compression comes out to be 1.41 GB. Click on [this link](https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip) to download the full dataset provided by SwiftKey. A sample of 5% of this data is used, with 72% of this sample being used for training, 8% for initial cross-validation ("held-out"), 10% for final cross-validation, and 10% for testing.
 
 ## Model Design
 ### 4-gram Language Model
+The 4-gram language model is a simple n-gram model which assumes that one can predict the next word in a given phrase using only the previous 3 words. By MLE using our dataset, the probability of the next word in a phrase being $w_n$, given the previous (n-1) words were $w_{1:(n-1)} = w_1, \dots, w_{n-1}$ is given by the equation:
+$$P(w_n|w_{1:(n-1)}) = \frac{C(w_{1:n})}{C(w_{1:(n-1)})}$$
+where $C(w_{1:n})$ represents the total number of times we have seen the n-gram $w_{1:n}$ in our dataset [1]. Using count matrices of all 3-grams and 4-grams in the training dataset, we are able to calculate a conditional probability matrix of each 4-gram $w_{1:4}$, given the initial 3-gram $w_{1:3}$. For prediction, the 4-gram probability matrix can filtered by setting the last 3 words of a given phrase as $w_{1:3}$, and the 4th word $w_4$ with the highest probability of occurring can be chosen as the prediciton.
 
 ### Modified "Stupid Backoff"
+The main downside of model above is the inability to deal with out-of-vocabulary (OOV) 4-grams. If any of the last 3 words of a phrase have not been seen in the training data set, the model will simply not produce a prediction. The way that this model works around that is by a method known as "stupid backoff" [2], where the prediction algorithm backs off to 3-grams, and tries to predict the next word with only the last 2 words instead. This paradigm is actually used to estimate the probability of a certain 4-gram, but we have adjusted it for our purposes. The calculated probability is discounted at each backoff in the following way, given $P(w_i|w_{i-n+1:i-1})$ is unknown:
+$$S(w_i|w_{i-n+1:i-1}) = \lambda P(w_i|w_{i-n+2:i-1})$
+We see that this probability no longer corresponds to a true probability, so it is denoted as $S$. We will refer to this as the conditional pseudo-probability. In our edition of this method, we always backoff all the way from 4-gram conditional probabilities to 1-gram psuedo-probabilities. At each backoff stage, we generate a prediction based on the conditional pseudo-probabilities at that stage. Thus, we end up with a 4-gram-based prediction, 3-gram-based prediction, 2-gram-based prediction, and 1-gram-based prediction, along with their respective conditional pseudo-probabilities. At the end, the word prediciton $w_i$ with the highest conditional pseudo-probability is chosen as our final prediction. Using the discounted pseudo-probabilities at this final selection stage helps to give the 4-gram model higher precedence over the lower-order n-gram models, which is how the prediction should theoretically work best (given enough training data). Through parameter tuning on the held-out set, we have found the optimal $\lambda$ to be $\lambda = 0.55$.
 
 ### Term Co-Occurrence Matrix
+
+
+## References
+
+[1] Jurafsky, D., &amp; Martin, J. H. (2014). Speech and language processing. Pearson. 
+[2] [Large Language Models in Machine Translation](https://aclanthology.org/D07-1090) (Brants et al., EMNLP 2007)
