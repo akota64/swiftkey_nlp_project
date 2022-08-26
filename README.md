@@ -31,7 +31,9 @@ where $C(w_{1:n})$ represents the total number of times we have seen the n-gram 
 
 ### Modified "Stupid Backoff"
 The main downside of model above is the inability to deal with out-of-vocabulary (OOV) 4-grams. If any of the last 3 words of a phrase have not been seen in the training data set, the model will simply not produce a prediction. The way that this model works around that is by a method known as "stupid backoff" [2], where the prediction algorithm backs off to 3-grams, and tries to predict the next word with only the last 2 words instead. This paradigm is actually used to estimate the probability of a certain 4-gram, but we have adjusted it for our purposes. The calculated probability is discounted at each backoff in the following way, given $P(w_i|w_{i-n+1:i-1})$ is unknown:
+
 $$S(w_i|w_{i-n+1:i-1}) = \lambda P(w_i|w_{i-n+2:i-1})$$
+
 We see that this probability no longer corresponds to a true probability, so it is denoted as $S$. We will refer to this as the conditional pseudo-probability. In our edition of this method, we always backoff all the way from 4-gram conditional probabilities to 1-gram psuedo-probabilities. At each backoff stage, we generate a prediction based on the conditional pseudo-probabilities at that stage. Thus, we end up with a 4-gram-based prediction, 3-gram-based prediction, 2-gram-based prediction, and 1-gram-based prediction, along with their respective conditional pseudo-probabilities. At the end, the word prediciton $w_i$ with the highest conditional pseudo-probability is chosen as our final prediction. Using the discounted pseudo-probabilities at this final selection stage helps to give the 4-gram model higher precedence over the lower-order n-gram models, which is how the prediction should theoretically work best (given enough training data). Through parameter tuning on the held-out set, we have found the optimal $\lambda$ to be $\lambda = 0.55$.
 
 ### Term Co-Occurrence Matrix
