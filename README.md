@@ -61,7 +61,7 @@ $$S_f = log(S_{sb}(w_j|w_{1:n-1})) + \eta$$
 
 $$\eta = min(\beta C_j)-\beta^2$$
 
-&nbsp; &nbsp; &nbsp; &nbsp; &nbsp; and tune $\beta$ accordingly. Here, $S_{sb}$ denotes the discounted conditional probability that comes from stupid backoff.
+&nbsp; &nbsp; &nbsp; &nbsp; and tune $\beta$ accordingly. Here, $S_{sb}$ denotes the discounted conditional probability that comes from stupid backoff.
 
 6. The final prediction method uses $S_f$ in the modified "stupid backoff" method explained above (instead of $S_{sb}$) to predict the next word.
 
