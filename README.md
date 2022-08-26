@@ -30,14 +30,40 @@ $$P(w_n|w_{1:(n-1)}) = \frac{C(w_{1:n})}{C(w_{1:(n-1)})}$$
 where $C(w_{1:n})$ represents the total number of times we have seen the n-gram $w_{1:n}$ in our dataset [1]. Using count matrices of all 3-grams and 4-grams in the training dataset, we are able to calculate a conditional probability matrix of each 4-gram $w_{1:4}$, given the initial 3-gram $w_{1:3}$. For prediction, the 4-gram probability matrix can filtered by setting the last 3 words of a given phrase as $w_{1:3}$, and the 4th word $w_4$ with the highest probability of occurring can be chosen as the prediciton.
 
 ### Modified "Stupid Backoff"
-The main downside of model above is the inability to deal with out-of-vocabulary (OOV) 4-grams. If any of the last 3 words of a phrase have not been seen in the training data set, the model will simply not produce a prediction. The way that this model works around that is by a method known as "stupid backoff" [2], where the prediction algorithm backs off to 3-grams, and tries to predict the next word with only the last 2 words instead. This paradigm is actually used to estimate the probability of a certain 4-gram, but we have adjusted it for our purposes. The calculated probability is discounted at each backoff in the following way, given $ P(w_i|w_{i-n+1:i-1}) $ is unknown:
+The main downside of model above is the inability to deal with out-of-vocabulary (OOV) 4-grams. If any of the last 3 words of a phrase have not been seen in the training data set, the model will simply not produce a prediction. The way that this model works around that is by a method known as "stupid backoff" [2], where the prediction algorithm backs off to 3-grams, and tries to predict the next word with only the last 2 words instead. This paradigm is actually used to estimate the probability of a certain 4-gram, but we have adjusted it for our purposes. The calculated probability is discounted at each backoff in the following way, given $P(w_i|w_{i-n+1:i-1})$ is unknown:
 
 $$S(w_i|w_{i-n+1:i-1}) = \lambda P(w_i|w_{i-n+2:i-1})$$
 
 We see that this probability no longer corresponds to a true probability, so it is denoted as $S$. We will refer to this as the conditional pseudo-probability. In our edition of this method, we always backoff all the way from 4-gram conditional probabilities to 1-gram psuedo-probabilities. At each backoff stage, we generate a prediction based on the conditional pseudo-probabilities at that stage. Thus, we end up with a 4-gram-based prediction, 3-gram-based prediction, 2-gram-based prediction, and 1-gram-based prediction, along with their respective conditional pseudo-probabilities. At the end, the word prediciton $w_i$ with the highest conditional pseudo-probability is chosen as our final prediction. Using the discounted pseudo-probabilities at this final selection stage helps to give the 4-gram model higher precedence over the lower-order n-gram models, which is how the prediction should theoretically work best (given enough training data). Through parameter tuning on the held-out set, we have found the optimal $\lambda$ to be $\lambda = 0.55$.
 
 ### Term Co-Occurrence Matrix
+A term co-occurrence matrix has also been created using textmineR, based on co-occurrence within the same sentence. We have used an experimental procedure to incorporate co-occurrence (and thus, context) into the prediction. The procedure goes as follows:
 
+1. User input is parsed into sentences. Only the last (potentially unfinished) sentence is retained.
+2. The retained sentence is tokenized into words, and stop words are removed. The remaining words will be referred to simply as words from now on. We will call these words $w_i$, so we have:
+
+$$w_1, \dots , w_c$$
+
+3. For each of the words $w_i$, we will extract all words $w_j$ with non-zero co-occurrence with $w_i$, and normalize the co-occurrences by proportion of total sentences containing the $w_i$ that also contains $w_j$, a co-occurrence rate. Basically, it is the empirical probability of $w_j$ being in the sentence given $w_i$ is already in the sentence. These will be denoted:
+$$P_{ij} = P(w_j \text{ in sentence}|w_i \text{ in sentence})$$
+
+4. These probabilities $P_{ij}$ are simply be multiplied across all of the words $w_i$ in our sentence (which amounts to adding the log-probabilities), and then the log probabilities are divided by the total number of words in our sentence. This will be referred to as the co-occurrence score for a word $w_j$, denoted as $C_j$. Multiplication (adding logs) is used to amplify this score for words that frequently occur together, keeping them near 1 (near 0 for logs). For example, let's say we have 2 words in our sentence: "brother" and "mother". Let's say our vocabulary has 2 words that co-occur with "brother", "sister" and "friend", while "sister" and "father" co-occur with "mother". The co-occurrence score for sister is calculated as the log-probability of occurring with brother plus the log-probability of occurring with mother. The other co-occurrences are ignored. We would only like to retain words that have previously co-occurred with each of the words in the matrix, and ignore novelties. (Novelties can be accounted for in a future implementation with a modified version of this co-occurrence method and Interpolated Kneser-Ney Smoothing)
+
+5. The co-occurrence score is incorporated into the final model's log-probabilities only for those words $w_j$ that already work with the given n-grams (only where $w_n=w_j$, given $w{1:(n-1)}$). This means that we will not be considering novel n-grams (n-grams that are not already in our training set) just based on context, but instead, attempting to incorporate context into our existing model. The pursuit of novelty prediction should also come with other grammatical training methods (like POS tagging), which may be incorporated in the future.  
+
+The co-occurrence score will be incorporated into the log conditional probabilities of each of the n-gram models in the following way, creating a new score variable $S_f$ to denote the new quantity (which is clearly no longer a probability):
+
+$$S_f = log(S_{sb}(w_j|w_{1:n-1})) + \beta C_j$$
+
+for those $w_j$ that have a co-occurrence score, and
+
+$$S_f = log(S_{sb}(w_j|w_{1:n-1})) + \eta$$
+
+for those that do not. To reduce the number of parameters we have to train, we will dynamically set
+
+$$\eta = min(\beta C_j)-\beta^2$$
+
+and tune $\beta$ accordingly. Here, $S_{sb}$ denotes the discounted conditional probability that comes from stupid backoff.
 
 ## References
 
